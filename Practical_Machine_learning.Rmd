@@ -1,0 +1,123 @@
+---
+title: "Practical Machine Learning"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+## Machine Learning using Random Forest
+
+```{r activity}
+library(caret)
+require(randomForest)
+require(ROCR)
+library(rpart)
+library(MASS)
+```
+
+### Getting Data 
+```{r}
+train.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(train.url, destfile = "./pml-training.csv")
+download.file(test.url, destfile = "./pml-testing.csv")
+```
+
+The data as it is, contains some unnecessary symbols which are removed when it is read into R.
+```{r}
+read.training <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+read.testing <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+```
+
+
+### Cleaning of data
+Some of the variables in the above dataset contain a lot of NA's. As a result, imputation is difficult when there are so many missing values. Hence, those variables are removed depending on what fraction of values are missing. 
+```{r}
+pMiss <- function(x){sum(is.na(x))/length(x)*100}
+NA_percent_train <- apply(read.training,2,pMiss)
+NA_percent_test <- apply(read.testing,2,pMiss)
+training_drop <- read.training[,-which(NA_percent_train > 0)]
+testing_drop <- read.testing[,-which(NA_percent_test > 0)]
+```
+    Not all the predictors are useful. So we remove those variables which have only a few values which keep repeating using the nearZeroVar function. Also, we remove variables such as username, timestamp etc. which have no influence on the response variable. 
+```{r}
+nzv_training <- nearZeroVar(training_drop[,-160])
+nzv_testing <- nearZeroVar(testing_drop[,-160])
+if (length(nzv_training) > 0) {
+  training_clean <- training_drop[, -nzv_training] 
+}
+if (length(nzv_testing) > 0) {
+  testing_clean <- testing_drop[, -nzv_testing] 
+}
+training_clean <- training_clean[,7:59]
+testing_clean <- testing_clean[,7:59]
+```
+
+### Training Data Splitting into training and testing set
+The training data is further split into training and testing set so that we can test the out-of-sample error of the model. In order to have the results reproduceable, we also set the seed.
+```{r}
+set.seed(5)
+inTrain <- createDataPartition(y=training_clean$classe, p=0.75, list=FALSE)
+training <- training_clean[inTrain,]
+training_val <- training_clean[-inTrain,]
+```
+
+### Training the data using random forest
+Repeated K-fold Cross-validation is used as the resampling scheme which creates multiple versions of the folds and aggregates the results. This make the model more robust. 5 different values of the tuning parameter (mtry) are used to choose the best tune.
+```{r}
+rpart_model <- rpart(formula = classe~., method="class", data=training, control = rpart.control(cp=0.001))
+predictions <- predict(rpart_model, newdata=training_val, type = "class")
+confusionMatrix(predictions,training_val$classe)
+
+lda_model<- lda(formula = classe~., data=training)
+predictions <- predict(lda_model, newdata=training_val)
+confusionMatrix(predictions$class,training_val$classe)
+
+
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 10)
+grid_rf <- expand.grid(.mtry = c(5, 6, 7, 8, 9))
+rf_model <- train(classe ~ ., data = training, method = "rf",
+              metric = "Kappa", trControl = ctrl,
+              tuneGrid = grid_rf)
+rf_model
+```
+
+So, we find that the best model is the one obtained using random forest. Moreover, the optimum value of the tuning parameter (m_try) is 9.
+
+```{r}
+predictions <- predict(rf_model, newdata=training_val)
+predictions_prob <- predict(rf_model, newdata=training_val, type = "prob")
+confusionMatrix(predictions,training_val$classe)
+predictions_test <- predict(rf_model,newdata=testing_clean)
+```
+## Conclusion
+Based on the model, the 20 activities in the test set can be categorized as follows:
+```{r echo=FALSE}
+table(predictions_test)
+```
+
+## Plots
+
+
+```{r echo=FALSE}
+plot(rf_model$finalModel, main = "Out-of-bag (OOB) error rate for different class of outcomes", lwd = 2)
+```
+
